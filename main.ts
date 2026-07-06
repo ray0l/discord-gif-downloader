@@ -69,7 +69,7 @@ for (let i = 0; i < urlArray.length; i++) {
 		skipped++;
 	}
 	
-	// Update progress
+	// Update progress 
 	process.stdout.write(`\r✅ ${completed} | ⏭️ ${skipped} | ${i + 1}/${urlArray.length}`);
 }
 
