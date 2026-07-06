@@ -6,50 +6,71 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
 const harFilePath = path.join(__dirname, "discord.har");
-
-// Read the HAR file
 const harData = JSON.parse(await file(harFilePath).text());
 
 const urls = new Set<string>();
-const errors: string[] = [];
+harData.log.entries.forEach((entry: any) => urls.add(entry.request.url));
 
-harData.log.entries.forEach((entry: any) => {
-	const url: string = entry.request.url;
-	urls.add(url);
-});
+console.log(`Downloading ${urls.size} files...`);
 
-// Download the medias
-for (const url of urls) {
-	// Remove query parameters from the URL before getting the filename
-	const urlWithoutQuery = url.split('?')[0] ?? url;
-	let fileName = path.basename(urlWithoutQuery);
+const downloadsDir = path.join(__dirname, "downloads");
+await Bun.write(path.join(downloadsDir, '.keep'), '');
+
+async function getUniquePath(fileName: string): Promise<string> {
+	const ext = path.extname(fileName);
+	const base = path.basename(fileName, ext);
+	let counter = 1;
+	let newName = fileName;
+	let fullPath = path.join(downloadsDir, newName);
 	
-	// if filename is only "mp4", generate a name based on the URL prefix (last 10 characters before "mp4")
-	if (fileName === "mp4") {
-		const prefix = (url.split("mp4")[0] ?? "").slice(-10);
-		const sanitizedPrefix = prefix.replace(/[^a-zA-Z0-9]/g, "");
-		fileName = `${sanitizedPrefix}_.mp4`;
+	while (await file(fullPath).exists()) {
+		newName = `${base} (${counter})${ext}`;
+		fullPath = path.join(downloadsDir, newName);
+		counter++;
 	}
-	
-	const filePath = path.join(__dirname, "downloads", fileName);
-
-	// Check if file already exists
-	if (await file(filePath).exists()) {
-		console.log(`Already exists: ${fileName}`);
-		continue;
-	}
-
-	try {
-		const response = await fetch(url);
-		if (!response.ok) throw new Error(`HTTP ${response.status}`);
-		
-		await Bun.write(filePath, response);
-		console.log(`Downloaded: ${fileName}`);
-	} catch (err) {
-		console.error(`Error downloading ${fileName}: ${(err as Error).message}`);
-		errors.push(`${fileName}: ${(err as Error).message}`);
-	}
+	return fullPath;
 }
 
-// Export errors to a log file
-await Bun.write(path.join(__dirname, "download_errors.log"), errors.join("\n"));
+// Force timeout using Promise.race
+function downloadWithForceTimeout(url: string, timeoutMs: number): Promise<void> {
+	return Promise.race([
+		(async () => {
+			const cleanUrl = url.split('?')[0];
+			let fileName = path.basename(cleanUrl);
+			
+			if (fileName === "mp4" || !fileName || fileName === path.extname(fileName)) {
+				const hash = Buffer.from(url).toString('base64').slice(-8).replace(/[^a-zA-Z0-9]/g, '');
+				const ext = path.extname(cleanUrl) || '.bin';
+				fileName = `${hash}${ext}`;
+			}
+			
+			const filePath = await getUniquePath(fileName);
+			const response = await fetch(url, {
+				headers: { 'User-Agent': 'Mozilla/5.0' }
+			});
+			
+			if (!response.ok) throw new Error(`HTTP ${response.status}`);
+			await Bun.write(filePath, response);
+		})(),
+		new Promise((_, reject) => setTimeout(() => reject(new Error('Timeout')), timeoutMs))
+	]);
+}
+
+// Download sequentially with forced timeouts
+const urlArray = Array.from(urls);
+let completed = 0;
+let skipped = 0;
+
+for (let i = 0; i < urlArray.length; i++) {
+	try {
+		await downloadWithForceTimeout(urlArray[i], 1000);
+		completed++;
+	} catch {
+		skipped++;
+	}
+	
+	// Update progress
+	process.stdout.write(`\r✅ ${completed} | ⏭️ ${skipped} | ${i + 1}/${urlArray.length}`);
+}
+
+console.log(`\n✅ Done! Downloaded ${completed}, Skipped ${skipped} files`);
